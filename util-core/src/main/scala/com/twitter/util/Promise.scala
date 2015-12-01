@@ -2,7 +2,7 @@ package com.twitter.util
 
 import com.twitter.concurrent.Scheduler
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.{AtomicReferenceFieldUpdater, AtomicBoolean}
 import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.runtime.NonLocalReturnControl
@@ -139,7 +139,7 @@ object Promise {
    * todo: do this sort of profiling in a production app with
    * production load.
    */
-  private sealed trait State[A]
+  trait State[A]
   private case class Waiting[A](first: K[A], rest: List[K[A]]) extends State[A]
   private case class Interruptible[A](waitq: List[K[A]], handler: PartialFunction[Throwable, Unit]) extends State[A]
   private case class Transforming[A](waitq: List[K[A]], other: Future[_]) extends State[A]
@@ -149,8 +149,6 @@ object Promise {
 
   private def initState[A]: State[A] = emptyState.asInstanceOf[State[A]]
   private val emptyState: State[Nothing] = Waiting(null, Nil)
-  private val unsafe = Unsafe()
-  private val stateOff = unsafe.objectFieldOffset(classOf[Promise[_]].getDeclaredField("state"))
   private val AlwaysUnit: Any => Unit = scala.Function.const(()) _
 
   sealed trait Responder[A] { this: Future[A] =>
@@ -321,6 +319,9 @@ class Promise[A]
   protected[util] final def depth = 0
   protected final def parent = this
 
+  protected final val updater =
+    AtomicReferenceFieldUpdater.newUpdater(classOf[Promise[A]], classOf[State[A]], "state")
+
   @volatile private[this] var state: Promise.State[A] = initState
   private def theState(): Promise.State[A] = state
 
@@ -336,8 +337,9 @@ class Promise[A]
 
   override def toString = "Promise@%s(state=%s)".format(hashCode, state)
 
+
   @inline private[this] def cas(oldState: State[A], newState: State[A]): Boolean =
-    unsafe.compareAndSwapObject(this, stateOff, oldState, newState)
+    updater.compareAndSet(this, oldState, newState)
 
   private[this] def runq(first: K[A], rest: List[K[A]], result: Try[A]) = Scheduler.submit(
     new Runnable {
