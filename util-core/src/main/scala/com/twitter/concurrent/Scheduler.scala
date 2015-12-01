@@ -1,10 +1,11 @@
 package com.twitter.concurrent
 
+import java.util
+
 import com.twitter.util.Awaitable.CanAwait
-import java.lang.management.ManagementFactory
-import java.util.ArrayDeque
 import java.util.concurrent._
 import java.util.concurrent.atomic.AtomicInteger
+
 import scala.collection.mutable
 
 /**
@@ -72,6 +73,8 @@ trait Scheduler {
 object Scheduler extends Scheduler {
   @volatile private var self: Scheduler = new LocalScheduler
 
+  var threadFactory: Option[ThreadFactory] = None
+
   def apply(): Scheduler = self
 
   /**
@@ -92,17 +95,15 @@ object Scheduler extends Scheduler {
 
   def submit(r: Runnable) = self.submit(r)
   def flush() = self.flush()
-
   def numDispatches = self.numDispatches
 
   def blocking[T](f: => T)(implicit perm: CanAwait) = self.blocking(f)
 }
 
-/**
- * An efficient thread-local, direct-dispatch scheduler.
- */
 class LocalScheduler(lifo: Boolean) extends Scheduler {
   def this() = this(false)
+
+  private[this] val SampleScale = 1000
 
   // use weak refs to prevent Activations from causing a memory leak
   // thread-safety provided by synchronizing on `activations`
@@ -117,7 +118,7 @@ class LocalScheduler(lifo: Boolean) extends Scheduler {
    */
   private class Activation extends Scheduler with Iterator[Runnable] {
     private[this] var r0, r1, r2: Runnable = null
-    private[this] val rs = new ArrayDeque[Runnable]
+    private[this] val rs = new util.ArrayDeque[Runnable]
     private[this] var running = false
     private[this] val rng = ThreadLocalRandom.current()
 
@@ -134,8 +135,7 @@ class LocalScheduler(lifo: Boolean) extends Scheduler {
       else rs.addLast(r)
 
       if (!running) {
-        numDispatches += 1
-        run()
+          run()
       }
     }
 
@@ -177,7 +177,10 @@ class LocalScheduler(lifo: Boolean) extends Scheduler {
       running = true
       try {
         while (hasNext)
-          next().run()
+          Scheduler.threadFactory match {
+            case Some(threadFactory) => threadFactory.newThread(next())
+            case None => next().run()
+          }
       } finally {
         running = save
       }
@@ -210,103 +213,69 @@ class LocalScheduler(lifo: Boolean) extends Scheduler {
   def flush(): Unit = get().flush()
 
   private[this] def activationsSum(f: Activation => Long): Long =
-    activations.synchronized { activations.keysIterator.map(f).sum }
+    activations.synchronized {
+      activations.keysIterator.map(f).sum
+    }
 
   def numDispatches: Long = activationsSum(_.numDispatches)
-
 
   def blocking[T](f: => T)(implicit perm: CanAwait): T = f
 }
 
-/**
- * A named Scheduler mix-in that causes submitted tasks to be dispatched according to
- * an [[java.util.concurrent.ExecutorService]] created by an abstract factory
- * function.
- */
-trait ExecutorScheduler { self: Scheduler =>
-  val name: String
-  val executorFactory: ThreadFactory => ExecutorService
 
-  protected val threadGroup: ThreadGroup = new ThreadGroup(name)
-  @volatile private[this] var threads = Set[Thread]()
 
-  protected val threadFactory = new ThreadFactory {
-    private val n = new AtomicInteger(1)
-
-    def newThread(r: Runnable) = {
-      val thread = new Thread(threadGroup, r, name + "-" + n.getAndIncrement())
-      thread.setDaemon(true)
-      thread
-    }
-  }
-
-  protected def threads(): Array[Thread] = {
-    // We add 2x slop here because it's inherently racy to enumerate
-    // threads. Since this is used only for monitoring purposes, we
-    // don't try too hard.
-    val threads = new Array[Thread](threadGroup.activeCount*2)
-    val n = threadGroup.enumerate(threads)
-    threads take n
-  }
-
-  protected[this] val executor = executorFactory(threadFactory)
-
-  def shutdown() { executor.shutdown() }
-  def submit(r: Runnable) { executor.execute(r) }
-  def flush() = ()
-
-  // Unsupported
-  def numDispatches = -1L
-
-  def getExecutor = executor
-
-  def blocking[T](f: => T)(implicit perm: CanAwait) = f
-}
-
-/**
- * A scheduler that dispatches directly to an underlying Java
- * cached threadpool executor.
- */
-class ThreadPoolScheduler(
-  val name: String,
-  val executorFactory: ThreadFactory => ExecutorService
-) extends Scheduler with ExecutorScheduler {
-  def this(name: String) = this(name, Executors.newCachedThreadPool(_))
-}
-
-/**
- * A scheduler that bridges tasks submitted by external threads into local
- * executor threads. All tasks submitted locally are executed on local threads.
- *
- * Note: This scheduler expects to create executors with unbounded capacity.
- * Thus it does not expect and has undefined behavior for any
- * `RejectedExecutionException`s other than those encountered after executor
- * shutdown.
- */
-class BridgedThreadPoolScheduler(
-  val name: String,
-  val executorFactory: ThreadFactory => ExecutorService
-) extends Scheduler with ExecutorScheduler {
-  private[this] val local = new LocalScheduler
-
-  def this(name: String) = this(name, Executors.newCachedThreadPool(_))
-
-  override def submit(r: Runnable) {
-    if (Thread.currentThread.getThreadGroup == threadGroup)
-      local.submit(r)
-    else
-      try
-        executor.execute(new Runnable {
-          def run() {
-            BridgedThreadPoolScheduler.this.submit(r)
-          }
-        })
-      catch {
-        case _: RejectedExecutionException => local.submit(r)
-      }
-  }
-
-  override def flush() =
-    if (Thread.currentThread.getThreadGroup == threadGroup)
-      local.flush()
-}
+///**
+// * A named Scheduler mix-in that causes submitted tasks to be dispatched according to
+// * an [[java.util.concurrent.ExecutorService]] created by an abstract factory
+// * function.
+// */
+//trait ExecutorScheduler { self: Scheduler =>
+//  val name: String
+//  val executorFactory: ThreadFactory => ExecutorService
+//
+//  protected val threadGroup: ThreadGroup = new ThreadGroup(name)
+//  @volatile private[this] var threads = Set[Thread]()
+//
+//  protected val threadFactory = new ThreadFactory {
+//    private val n = new AtomicInteger(1)
+//
+//    def newThread(r: Runnable) = {
+//      val thread = new Thread(threadGroup, r, name + "-" + n.getAndIncrement())
+//      thread.setDaemon(true)
+//      thread
+//    }
+//  }
+//
+//  protected def threads(): Array[Thread] = {
+//    // We add 2x slop here because it's inherently racy to enumerate
+//    // threads. Since this is used only for monitoring purposes, we
+//    // don't try too hard.
+//    val threads = new Array[Thread](threadGroup.activeCount*2)
+//    val n = threadGroup.enumerate(threads)
+//    threads take n
+//  }
+//
+//  protected[this] val executor = executorFactory(threadFactory)
+//
+//  def shutdown() { executor.shutdown() }
+//  def submit(r: Runnable) { executor.execute(r) }
+//  def flush() = ()
+//
+//  // Unsupported
+//  def numDispatches = -1L
+//
+//  def getExecutor = executor
+//
+//  def blocking[T](f: => T)(implicit perm: CanAwait) = f
+//}
+//
+///**
+// * A scheduler that dispatches directly to an underlying Java
+// * cached threadpool executor.
+// */
+//class ThreadPoolScheduler(
+//  val name: String,
+//  val executorFactory: ThreadFactory => ExecutorService
+//) extends Scheduler with ExecutorScheduler {
+//  def this(name: String) = this(name, Executors.newCachedThreadPool(_))
+//}
