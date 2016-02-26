@@ -178,7 +178,8 @@ class LocalScheduler(lifo: Boolean) extends Scheduler {
       try {
         while (hasNext)
           Scheduler.threadFactory match {
-            case Some(threadFactory) => threadFactory.newThread(next())
+            case Some(threadFactory) =>
+              threadFactory.newThread(next()).start()
             case None => next().run()
           }
       } finally {
