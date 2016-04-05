@@ -3,12 +3,13 @@ import sbt._
 import pl.project13.scala.sbt.JmhPlugin
 import sbtunidoc.Plugin.unidocSettings
 import scoverage.ScoverageSbtPlugin
+import bintray.BintrayKeys
 
 object Util extends Build {
   val branch = Process("git" :: "rev-parse" :: "--abbrev-ref" :: "HEAD" :: Nil).!!.trim
   val suffix = if (branch == "master") "" else "-SNAPSHOT"
 
-  val libVersion = "6.28.0" + suffix
+  val libVersion = "6.28.0"
   val zkVersion = "3.5.0-alpha"
   val zkDependency = "org.apache.zookeeper" % "zookeeper" % zkVersion excludeAll(
     ExclusionRule("com.sun.jdmk", "jmxtools"),
@@ -39,17 +40,23 @@ object Util extends Build {
 
   val sharedSettings = Seq(
     version := libVersion,
-    organization := "com.twitter",
-    scalaVersion := "2.10.5",
-    crossScalaVersions := Seq("2.10.5", "2.11.7"),
+    organization := "litmushealth",
+    scalaVersion := "2.11.7",
+    // crossScalaVersions := Seq("2.10.5", "2.11.7"),
     // Workaround for a scaladoc bug which causes it to choke on
     // empty classpaths.
-    unmanagedClasspath in Compile += Attributed.blank(new java.io.File("doesnotexist")),
-    libraryDependencies ++= Seq(
-      "junit" % "junit" % "4.8.1" % "test",
-      "org.mockito" % "mockito-all" % "1.9.5" % "test",
-      "org.scalatest" %% "scalatest" % "2.2.4" % "test"
-    ),
+//    unmanagedClasspath in Compile += Attributed.blank(new java.io.File("doesnotexist")),
+//    libraryDependencies ++= Seq(
+//      "junit" % "junit" % "4.8.1" % "test",
+//      "org.mockito" % "mockito-all" % "1.9.5" % "test",
+//      "org.scalatest" %% "scalatest" % "2.2.4" % "test"
+//    ),
+
+    // Bintray Configuration
+    BintrayKeys.bintrayOrganization := Some("litmushealth"),
+    BintrayKeys.bintrayOmitLicense := true,
+
+    publishMavenStyle := true,
 
     resolvers += "twitter repo" at "https://maven.twttr.com",
 
@@ -60,11 +67,11 @@ object Util extends Build {
       }
     ),
 
-    publishM2Configuration <<= (packagedArtifacts, checksums in publish, ivyLoggingLevel) map { (arts, cs, level) =>
-      Classpaths.publishConfig(arts, None, resolverName = m2Repo.name, checksums = cs, logging = level)
-    },
-    publishM2 <<= Classpaths.publishTask(publishM2Configuration, deliverLocal),
-    otherResolvers += m2Repo,
+//    publishM2Configuration <<= (packagedArtifacts, checksums in publish, ivyLoggingLevel) map { (arts, cs, level) =>
+//      Classpaths.publishConfig(arts, None, resolverName = m2Repo.name, checksums = cs, logging = level)
+//    },
+//    publishM2 <<= Classpaths.publishTask(publishM2Configuration, deliverLocal),
+//    otherResolvers += m2Repo,
 
     scalacOptions ++= Seq("-encoding", "utf8"),
     scalacOptions += "-deprecation",
@@ -73,40 +80,40 @@ object Util extends Build {
     javacOptions in doc := Seq("-source", "1.7"),
 
     // This is bad news for things like com.twitter.util.Time
-    parallelExecution in Test := false,
+    parallelExecution in Test := false
 
     // Sonatype publishing
-    publishArtifact in Test := false,
-    pomIncludeRepository := { _ => false },
-    publishMavenStyle := true,
-    autoAPIMappings := true,
-    apiURL := Some(url("https://twitter.github.io/util/docs/")),
-    pomExtra := (
-      <url>https://github.com/twitter/util</url>
-      <licenses>
-        <license>
-          <name>Apache License, Version 2.0</name>
-          <url>http://www.apache.org/licenses/LICENSE-2.0</url>
-        </license>
-      </licenses>
-      <scm>
-        <url>git@github.com:twitter/util.git</url>
-        <connection>scm:git:git@github.com:twitter/util.git</connection>
-      </scm>
-      <developers>
-        <developer>
-          <id>twitter</id>
-          <name>Twitter Inc.</name>
-          <url>https://www.twitter.com/</url>
-        </developer>
-      </developers>),
-    publishTo <<= version { (v: String) =>
-      val nexus = "https://oss.sonatype.org/"
-      if (v.trim.endsWith("SNAPSHOT"))
-        Some("snapshots" at nexus + "content/repositories/snapshots")
-      else
-        Some("releases"  at nexus + "service/local/staging/deploy/maven2")
-    }
+//    publishArtifact in Test := false,
+//    pomIncludeRepository := { _ => false },
+//    publishMavenStyle := true,
+//    autoAPIMappings := true,
+//    apiURL := Some(url("https://twitter.github.io/util/docs/")),
+//    pomExtra := (
+//      <url>https://github.com/twitter/util</url>
+//      <licenses>
+//        <license>
+//          <name>Apache License, Version 2.0</name>
+//          <url>http://www.apache.org/licenses/LICENSE-2.0</url>
+//        </license>
+//      </licenses>
+//      <scm>
+//        <url>git@github.com:twitter/util.git</url>
+//        <connection>scm:git:git@github.com:twitter/util.git</connection>
+//      </scm>
+//      <developers>
+//        <developer>
+//          <id>Litmus Health</id>
+//          <name>Twitter Inc.</name>
+//          <url>https://www.twitter.com/</url>
+//        </developer>
+//      </developers>),
+//    publishTo <<= version { (v: String) =>
+//      val nexus = "https://oss.sonatype.org/"
+//      if (v.trim.endsWith("SNAPSHOT"))
+//        Some("snapshots" at nexus + "content/repositories/snapshots")
+//      else
+//        Some("releases"  at nexus + "service/local/staging/deploy/maven2")
+//    }
   )
 
   lazy val util = Project(
